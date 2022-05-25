@@ -1,10 +1,17 @@
 package main
 
 import (
-	"github.com/LukeEmmet/html2gemini"
-	gemini "github.com/makeworld-the-better-one/go-gemini"
-	flag "github.com/spf13/pflag"
+	"context"
+	"crypto/tls"
+	_ "embed"
+	"html/template"
+	"os/signal"
 	"strconv"
+
+	"git.sr.ht/~adnano/go-gemini"
+	"git.sr.ht/~adnano/go-gemini/certificate"
+	"github.com/LukeEmmet/html2gemini"
+	flag "github.com/spf13/pflag"
 
 	"fmt"
 	"io"
@@ -16,7 +23,6 @@ import (
 	"strings"
 	"time"
 )
-
 
 var version = "0.2.1"
 
@@ -92,12 +98,16 @@ func htmlToGmi(inputHtml string) (string, error) {
 
 }
 
-func (h WebPipeHandler) Handle(r gemini.Request) *gemini.Response {
+//func (h WebPipeHandler) Handle(r gemini.Request) *gemini.Response {
+func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
+	fmt.Printf("URL %v\n", r)
 
 	url := r.URL.String()
 	if r.URL.Scheme != "http" && r.URL.Scheme != "https" {
 		//any other schemes are not implemented by this proxy
-		return &gemini.Response{53, "Scheme not supported: " + r.URL.Scheme, nil, nil}
+		w.WriteHeader(53, "Scheme not supported: "+r.URL.Scheme)
+		return
+		//return &gemini.Response{53, "Scheme not supported: " + r.URL.Scheme, nil, nil}
 	}
 
 	info("Retrieve: %s", r.URL.String())
@@ -125,7 +135,9 @@ func (h WebPipeHandler) Handle(r gemini.Request) *gemini.Response {
 	//fmt.Println("making request")
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return &gemini.Response{43, "Could not connect to remote HTTP host", nil, nil}
+		w.WriteHeader(43, "Could not connect to remote HTTP host")
+		return
+		//return &gemini.Response{43, "Could not connect to remote HTTP host", nil, nil}
 	}
 
 	//set user agent if specified
@@ -135,7 +147,9 @@ func (h WebPipeHandler) Handle(r gemini.Request) *gemini.Response {
 
 	response, err := netClient.Do(req)
 	if err != nil {
-		return &gemini.Response{43, "Remote host did not respond with valid HTTP", nil, nil}
+		w.WriteHeader(43, "Remote host did not respond with valid HTTP")
+		return
+		//return &gemini.Response{43, "Remote host did not respond with valid HTTP", nil, nil}
 	}
 
 	defer response.Body.Close()
@@ -148,14 +162,19 @@ func (h WebPipeHandler) Handle(r gemini.Request) *gemini.Response {
 
 		//tell the client to get it from a different location otherwise the client
 		//wont know the baseline for link refs
-		return &gemini.Response{30, response.Request.URL.String(), nil, nil}
+		w.WriteHeader(30, response.Request.URL.String())
+		return
+
+		//return &gemini.Response{30, response.Request.URL.String(), nil, nil}
 	}
 
 	contents, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		abandonMsg := fmt.Sprintf("Download abandoned after %d seconds: %s", *maxDownloadTime, response.Request.URL.String())
 		info(abandonMsg)
-		return &gemini.Response{43, abandonMsg, nil, nil}
+		w.WriteHeader(43, abandonMsg)
+		return
+		//return &gemini.Response{43, abandonMsg, nil, nil}
 	}
 
 	if response.StatusCode == 200 {
@@ -172,7 +191,9 @@ func (h WebPipeHandler) Handle(r gemini.Request) *gemini.Response {
 			gmi, err := htmlToGmi(string(contents))
 
 			if err != nil {
-				return &gemini.Response{42, "HTML to GMI conversion failure", nil, nil}
+				w.WriteHeader(42, "HTML to GMI conversion failure")
+				return
+				//return &gemini.Response{42, "HTML to GMI conversion failure", nil, nil}
 			}
 
 			//add a footer to communicate that the content was filtered and not original
@@ -192,33 +213,125 @@ func (h WebPipeHandler) Handle(r gemini.Request) *gemini.Response {
 			body = ioutil.NopCloser(strings.NewReader(string(contents)))
 		}
 
-		return &gemini.Response{20, contentType, body, nil}
+		w.WriteHeader(20, contentType)
+		io.Copy(w, body)
+		return
+		//return &gemini.Response{20, contentType, body, nil}
 
 	} else if response.StatusCode == 404 {
-		return &gemini.Response{51, "Not found", nil, nil}
+		w.WriteHeader(51, "Not found")
+		return
+		//return &gemini.Response{51, "Not found", nil, nil}
 	} else {
-		return &gemini.Response{50, "Failure: HTTP status: " + response.Status, nil, nil}
+		w.WriteHeader(50, "Failure: HTTP status: "+response.Status)
+		return
+		//return &gemini.Response{50, "Failure: HTTP status: " + response.Status, nil, nil}
 	}
-
 }
 
-func main() {
+//go:embed index.gmi.tmpl
+var indextmpl string
 
+func main() {
 	flag.Parse()
 
-    if *verFlag {
+	if *verFlag {
 		fmt.Println("Duckling Proxy v" + version)
 		return
 	}
-    
+
 	handler := WebPipeHandler{}
 
-     info("Starting Duckling Proxy v%s on %s port: %d", version, *address, *port)
+	info("Starting Duckling Proxy v%s on %s port: %d", version, *address, *port)
 
-	err := gemini.ListenAndServe(*address+":"+strconv.Itoa(*port), *serverCert, *serverKey, handler)
+	certificates := &certificate.Store{}
+	var scope string = "*"
+	certificates.Register(scope)
 
-
-    if err != nil {
+	pubkeybytes, err := ioutil.ReadFile(*serverCert)
+	if err != nil {
 		log.Fatal(err)
 	}
+	privkeybytes, err := ioutil.ReadFile(*serverKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	cert, err := tls.X509KeyPair(pubkeybytes, privkeybytes)
+	if err != nil {
+		log.Fatal(err)
+	}
+	certificates.Add(scope, cert)
+
+	mux := &gemini.Mux{}
+	index, err := template.New("index").Parse(indextmpl)
+	if err != nil {
+		log.Fatal(err)
+	}
+	mux.HandleFunc("/", func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
+		w.WriteHeader(gemini.StatusSuccess, "text/gemini")
+		index.Execute(w, nil)
+	})
+
+	mux.HandleFunc("/view", func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
+		if r.URL.RawQuery == "" {
+			w.WriteHeader(gemini.StatusInput, "")
+		}
+		query := r.URL.Query()
+		for url := range query {
+			nr, err := gemini.NewRequest(url)
+			if err != nil {
+				w.WriteHeader(gemini.StatusTemporaryFailure, "")
+				w.Write([]byte(err.Error()))
+				return
+			}
+			handler.Handle(ctx, w, nr)
+			break
+		}
+	})
+
+	baseHandler := gemini.HandlerFunc(func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
+		if r.URL.Scheme == "gemini" {
+			mux.ServeGemini(ctx, w, r)
+		} else {
+			handler.Handle(ctx, w, r)
+		}
+	})
+
+	server := &gemini.Server{
+		Addr:           *address + ":" + strconv.Itoa(*port),
+		Handler:        gemini.LoggingMiddleware(baseHandler),
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   1 * time.Minute,
+		GetCertificate: certificates.Get,
+	}
+
+	// Listen for interrupt signal
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+
+	errch := make(chan error)
+	go func() {
+		ctx := context.Background()
+		errch <- server.ListenAndServe(ctx)
+	}()
+
+	select {
+	case err := <-errch:
+		log.Fatal(err)
+	case <-c:
+		// Shutdown the server
+		log.Println("Shutting down...")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		err := server.Shutdown(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	//err := gemini.ListenAndServe(*address+":"+strconv.Itoa(*port), *serverCert, *serverKey, handler)
+
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
 }
