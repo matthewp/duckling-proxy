@@ -52,6 +52,34 @@ Usage:
 
 You will need to configure your Gemini client to point to the server when there is a need to access any <code>http://</code> or <code>https://</code> requests.
 
+### As middleware
+
+You can also use quack-proxy as middleware with [go-gemini](https://git.sr.ht/~adnano/go-gemini).
+
+```go
+mux := &gemini.Mux{}
+
+middleware := quack.Middleware(quack.MiddlewareOptions{
+  Handler:        mux,
+})
+
+mux.HandleFunc("/", func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
+  w.WriteHeader(gemini.StatusSuccess, "text/gemini")
+  w.Write([]byte("Hello world!"))
+})
+
+server := &gemini.Server{
+  Addr:           ":1965",
+  Handler:        gemini.LoggingMiddleware(middleware),
+  ReadTimeout:    30 * time.Second,
+  WriteTimeout:   1 * time.Minute,
+  GetCertificate: setupCerts().Get,
+}
+
+ctx := context.Background()
+server.ListenAndServe(ctx)
+```
+
 ## Supported clients
 
 The following clients support per-scheme proxies and can be configured to use Duckling proxy.

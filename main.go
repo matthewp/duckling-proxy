@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"embed"
 	"os/signal"
-	"strconv"
 	"text/template"
 
 	"crawler.club/ce"
@@ -34,6 +33,7 @@ type TemplateRenderer = func(*gemini.Request, gemini.ResponseWriter, Page)
 
 type WebPipeHandler struct {
 	RenderTemplate TemplateRenderer
+	ProxyOptions   *ProxyOptions
 }
 
 func fatal(format string, a ...interface{}) {
@@ -65,16 +65,41 @@ type Page struct {
 	Version string
 }
 
-func htmlToGmi(inputHtml string) (string, error) {
+type ProxyOptions struct {
+	ConversionOptions *ConversionOptions
+	UserAgent         string
+	MaxDownloadTime   int
+	MaxConnectTime    int
+}
+
+type ConversionOptions struct {
+	PrettyTables      bool
+	CitationStart     int
+	LinkEmitFrequency int
+	CitationMarkers   bool
+	NumberedLinks     bool
+	EmitImagesAsLinks bool
+}
+
+var defaultConversionOpts = &ConversionOptions{
+	CitationStart:     1,
+	CitationMarkers:   false,
+	NumberedLinks:     false,
+	PrettyTables:      false,
+	EmitImagesAsLinks: true,
+	LinkEmitFrequency: 2,
+}
+
+func htmlToGmi(opts *ConversionOptions, inputHtml string) (string, error) {
 
 	//convert html to gmi
 	options := html2gemini.NewOptions()
-	options.PrettyTables = *prettyTables
-	options.CitationStart = *citationStart
-	options.LinkEmitFrequency = *linkEmitFrequency
-	options.CitationMarkers = *citationMarkers
-	options.NumberedLinks = *numberedLinks
-	options.EmitImagesAsLinks = *emitImagesAsLinks
+	options.PrettyTables = opts.PrettyTables
+	options.CitationStart = opts.CitationStart
+	options.LinkEmitFrequency = opts.LinkEmitFrequency
+	options.CitationMarkers = opts.CitationMarkers
+	options.NumberedLinks = opts.NumberedLinks
+	options.EmitImagesAsLinks = opts.EmitImagesAsLinks
 
 	//dont use an extra line to separate header from body, but
 	//do separate each row visually
@@ -108,8 +133,8 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 	//see https://medium.com/@nate510/don-t-use-go-s-default-http-client-4804cb19f779
 	//also https://gist.github.com/ijt/950790/fca88967337b9371bb6f7155f3304b3ccbf3946f
 
-	connectTimeout := time.Second * time.Duration(*maxConnectTime)
-	clientTimeout := time.Second * time.Duration(*maxDownloadTime)
+	connectTimeout := time.Second * time.Duration(h.ProxyOptions.MaxConnectTime)
+	clientTimeout := time.Second * time.Duration(h.ProxyOptions.MaxDownloadTime)
 
 	//create custom transport with timeout
 	var netTransport = &http.Transport{
@@ -132,8 +157,8 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 	}
 
 	//set user agent if specified
-	if *userAgent != "" {
-		req.Header.Add("User-Agent", *userAgent)
+	if h.ProxyOptions.UserAgent != "" {
+		req.Header.Add("User-Agent", h.ProxyOptions.UserAgent)
 	}
 
 	response, err := netClient.Do(req)
@@ -158,7 +183,7 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 
 	contents, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		abandonMsg := fmt.Sprintf("Download abandoned after %d seconds: %s", *maxDownloadTime, response.Request.URL.String())
+		abandonMsg := fmt.Sprintf("Download abandoned after %d seconds: %s", h.ProxyOptions.MaxConnectTime, response.Request.URL.String())
 		info(abandonMsg)
 		w.WriteHeader(43, abandonMsg)
 		return
@@ -170,14 +195,14 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 		info("Content-Type: %s", contentType)
 
 		var body io.ReadCloser
-		if !*unfiltered && strings.Contains(contentType, "text/html") {
+		if strings.Contains(contentType, "text/html") {
 
 			info("Converting to text/gemini: %s", r.URL.String())
 
 			doc := ce.ParsePro(url, string(contents), "127.0.0.1", false)
 
 			var transformedHtml string = doc.Html
-			gmi, err := htmlToGmi(transformedHtml)
+			gmi, err := htmlToGmi(h.ProxyOptions.ConversionOptions, transformedHtml)
 
 			if err != nil {
 				w.WriteHeader(42, "HTML to GMI conversion failure")
@@ -220,11 +245,20 @@ type Proxy struct {
 	RenderTemplate TemplateRenderer
 }
 
-func NewProxy() *Proxy {
-	tmpl := template.Must(template.ParseFS(templatecontent, "templates/*"))
+func NewProxy(opts *ProxyOptions) *Proxy {
+	tmpl := template.Must(template.ParseFS(templatecontent, "templates/*")).Lookup("view.gmi.tmpl")
+
+	if opts == nil {
+		opts = &ProxyOptions{
+			ConversionOptions: defaultConversionOpts,
+		}
+	} else if opts.ConversionOptions == nil {
+		opts.ConversionOptions = defaultConversionOpts
+	}
 
 	return &Proxy{
 		Handler: WebPipeHandler{
+			ProxyOptions:   opts,
 			RenderTemplate: CreateDefaultRenderTemplate(tmpl),
 		},
 	}
@@ -234,7 +268,28 @@ func (p *Proxy) SetRenderTemplate(renderTemplate func(*gemini.Request, gemini.Re
 	p.Handler.RenderTemplate = renderTemplate
 }
 
-func (p *Proxy) Middleware() gemini.HandlerFunc {
+type MiddlewareOptions struct {
+	Handler        gemini.Handler
+	RenderTemplate *TemplateRenderer
+	ProxyOptions   *ProxyOptions
+}
+
+func (p *Proxy) Middleware(opts MiddlewareOptions) gemini.HandlerFunc {
+	if opts.RenderTemplate != nil {
+		p.Handler.RenderTemplate = *opts.RenderTemplate
+	}
+
+	hh := opts.Handler
+	return gemini.HandlerFunc(func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
+		if r.URL.Scheme == "gemini" {
+			hh.ServeGemini(ctx, w, r)
+			return
+		}
+		p.Handler.Handle(ctx, w, r)
+	})
+}
+
+func (p *Proxy) DefaultMiddleware() gemini.HandlerFunc {
 	return gemini.HandlerFunc(func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
 		if r.URL.Scheme == "gemini" {
 			if p.Mux != nil {
@@ -246,6 +301,10 @@ func (p *Proxy) Middleware() gemini.HandlerFunc {
 	})
 }
 
+func Middleware(opts MiddlewareOptions) gemini.HandlerFunc {
+	return NewProxy(nil).Middleware(opts)
+}
+
 func CreateDefaultRenderTemplate(tmpl *template.Template) TemplateRenderer {
 	return func(r *gemini.Request, w gemini.ResponseWriter, p Page) {
 		tmpl.Execute(w, p)
@@ -253,14 +312,7 @@ func CreateDefaultRenderTemplate(tmpl *template.Template) TemplateRenderer {
 }
 
 func Start() {
-	flag.Parse()
-
-	if *verFlag {
-		fmt.Println("Duckling Proxy v" + version)
-		return
-	}
-
-	info("Starting Duckling Proxy v%s on %s port: %d", version, *address, *port)
+	info("Starting Duckling Proxy v%s on %s port: %d", version, "127.0.0.1", "1965")
 
 	certificates := &certificate.Store{}
 	var scope string = "*"
@@ -272,6 +324,13 @@ func Start() {
 		pubkeybytes = []byte(os.Getenv("CERT"))
 		privkeybytes = []byte(os.Getenv("KEY"))
 	} else {
+		var (
+			serverCert = flag.StringP("serverCert", "c", "", "serverCert path. ")
+			serverKey  = flag.StringP("serverKey", "k", "", "serverKey path. ")
+		)
+
+		flag.Parse()
+
 		c, err := ioutil.ReadFile(*serverCert)
 		if err != nil {
 			log.Fatal(err)
@@ -290,14 +349,9 @@ func Start() {
 	}
 	certificates.Add(scope, cert)
 
-	addr := ":" + strconv.Itoa(*port)
-	if *address != "127.0.0.1" {
-		addr = *address + addr
-	}
-
 	server := &gemini.Server{
-		Addr:           addr,
-		Handler:        gemini.LoggingMiddleware(NewProxy().Middleware()),
+		Addr:           ":1965",
+		Handler:        gemini.LoggingMiddleware(NewProxy(nil).DefaultMiddleware()),
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   1 * time.Minute,
 		GetCertificate: certificates.Get,
