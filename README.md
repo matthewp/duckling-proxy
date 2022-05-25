@@ -1,43 +1,34 @@
-# Duckling Proxy 🦆
-Duckling proxy is a Gemini proxy to access the Small Web. Connecting to it with your Gemini client means you can access many web pages directly with your favourite client.
+# Quack Proxy 🦆
 
-Cross platform, written in Go.
+Quack proxy is a Gemini proxy that proxies HTTP content into the Gemini protocol. It is a fork of [Duckling proxy](https://github.com/LukeEmmet/duckling-proxy) adding the following features:
 
-## What is the Small Web?
+* When possible, Quack extracts the *article* from the page and avoids rendering sidebars and other content that doesn't translate well to gemtext.
+* Quack is available as *middleware* to [go-gemini](https://git.sr.ht/~adnano/go-gemini) so it can be used from your own server.
 
-The Small Web are those pages on the WWW that are typically characterised:
-
-* simple and document/content centric, using simple headings, bullets, links and tables only
-* accessible to different web clients, but do not need a monster browser such as Chrome to view them
-* do not require client side javascript
-* do not require tracking, cookies, forms or authentication to be viewed
-* can be accessed using standard HTTP GET requests
-* could be rendered as text/gemini without significant loss of information
-* apart from the huge commercial mega sites, a significant portion of the web
-
-With Duckling, you can now browse the Small Web using your favourite Gemini client, and just open a standard web browser only when you need to!
-
-## What is the Duckling proxy?
-
-The Duckling proxy 🦆 is a scheme-specific filtering proxy for Gemini clients to access the web. It behaves as a normal Gemini server, except it retrieves its content from the web. You can tailor its behaviour when it starts, to tailor how web pages are transformed to gemtext.
-
-It is scheme-specific, i.e. it is designed to handle HTTP requests only. [Agena](https://tildegit.org/solderpunk/agena) is another example of a scheme specific proxy, supporting <code>gopher://</code>
-
-Web pages are translated to text/gemini. Other web resources are returned directly.
-
-The primary intended use case for this proxy is as a personal proxy to make the web accessible to your favourite Gemini client. 
-
-## Why is it called "Duckling"?
-
-Small Web Daemon -> Small WebD -> Small webbed -> Duckling.
+Quack proxy is cross platform and written in Go.
 
 ## Usage
 
+### Full server
+
+```go
+import (
+  quack "github.com/matthewp/quack-proxy"
+)
+```
+
+You can use Quack a couple of ways. To start a server straight away using CLI flags, like with Duckling, just call Start():
+
+```go
+func main() {
+  quack.Start()
+}
+```
+
+The following flags are inherited from Duckling:
+
 ```
 Usage:
-
-duckling-proxy [flags]
-
   -a, --address string          Bind to address
                                  (default "127.0.0.1")
   -m, --citationMarkers         Use footnote style citation markers
@@ -59,12 +50,6 @@ duckling-proxy [flags]
   
 ```
 
-## Remarks
-
-* serverCert - required - path to Gemini server TLS certificate
-* serverKey - required - path to Gemini server TLS private key
-* All other flags are optional and you can experiment with them
-
 You will need to configure your Gemini client to point to the server when there is a need to access any <code>http://</code> or <code>https://</code> requests.
 
 ## Supported clients
@@ -80,36 +65,3 @@ The following clients support per-scheme proxies and can be configured to use Du
 * [Telescope](https://telescope.omarpolo.com/) - set proxy in the config file add: ```proxy "https" via "gemini://127.0.0.1:1965"```, and similarly for http
 
 Let me know if your client supports per scheme proxies and I'll add it to the list.
-
-## Installation
-
-If you have Go installed, you can also install the latest commit it with:
-
-```
-go env -w GO111MODULE=on
-go get github.com/LukeEmmet/duckling-proxy@master
-```
-
-## Feedback
-
-Send me your thoughts and feedback to
-
-```
-luke [at] marmaladefoo [dot] com
-```
-
-## History
-
-### 0.2.1
-
-First publicly versioned build.
-
-* fix bug whereby Duckling would crash on download timeout.
-* removed patch for AV-98 and updated readme now that AV-98 is officially supports http proxies
-* add -v version flag
-* print version in footer
-
-
-### 0.1
-
-First release (unversioned), 30-Aug-2020

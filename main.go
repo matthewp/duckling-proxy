@@ -234,13 +234,25 @@ func (p *Proxy) SetRenderTemplate(renderTemplate func(*gemini.Request, gemini.Re
 	p.Handler.RenderTemplate = renderTemplate
 }
 
+func (p *Proxy) Middleware() gemini.HandlerFunc {
+	return gemini.HandlerFunc(func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
+		if r.URL.Scheme == "gemini" {
+			if p.Mux != nil {
+				p.Mux.ServeGemini(ctx, w, r)
+				return
+			}
+		}
+		p.Handler.Handle(ctx, w, r)
+	})
+}
+
 func CreateDefaultRenderTemplate(tmpl *template.Template) TemplateRenderer {
 	return func(r *gemini.Request, w gemini.ResponseWriter, p Page) {
 		tmpl.Execute(w, p)
 	}
 }
 
-func (p *Proxy) Start() {
+func Start() {
 	flag.Parse()
 
 	if *verFlag {
@@ -278,16 +290,6 @@ func (p *Proxy) Start() {
 	}
 	certificates.Add(scope, cert)
 
-	baseHandler := gemini.HandlerFunc(func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
-		if r.URL.Scheme == "gemini" {
-			if p.Mux != nil {
-				p.Mux.ServeGemini(ctx, w, r)
-				return
-			}
-		}
-		p.Handler.Handle(ctx, w, r)
-	})
-
 	addr := ":" + strconv.Itoa(*port)
 	if *address != "127.0.0.1" {
 		addr = *address + addr
@@ -295,7 +297,7 @@ func (p *Proxy) Start() {
 
 	server := &gemini.Server{
 		Addr:           addr,
-		Handler:        gemini.LoggingMiddleware(baseHandler),
+		Handler:        gemini.LoggingMiddleware(NewProxy().Middleware()),
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   1 * time.Minute,
 		GetCertificate: certificates.Get,
