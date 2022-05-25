@@ -1,13 +1,14 @@
-package main
+package quack
 
 import (
 	"context"
 	"crypto/tls"
-	_ "embed"
-	"html/template"
+	"embed"
 	"os/signal"
 	"strconv"
+	"text/template"
 
+	"crawler.club/ce"
 	"git.sr.ht/~adnano/go-gemini"
 	"git.sr.ht/~adnano/go-gemini/certificate"
 	"github.com/LukeEmmet/html2gemini"
@@ -26,26 +27,14 @@ import (
 
 var version = "0.2.1"
 
-type WebPipeHandler struct {
-}
+//go:embed templates/*
+var templatecontent embed.FS
 
-var (
-	citationStart     = flag.IntP("citationStart", "s", 1, "Start citations from this index")
-	citationMarkers   = flag.BoolP("citationMarkers", "m", false, "Use footnote style citation markers")
-	numberedLinks     = flag.BoolP("numberedLinks", "n", false, "Number the links")
-	prettyTables      = flag.BoolP("prettyTables", "r", false, "Pretty tables - works with most simple tables")
-	emitImagesAsLinks = flag.BoolP("emitImagesAsLinks", "e", false, "Emit links to included images")
-	linkEmitFrequency = flag.IntP("linkEmitFrequency", "l", 2, "Emit gathered links through the document after this number of paragraphs")
-	serverCert        = flag.StringP("serverCert", "c", "", "serverCert path. ")
-	serverKey         = flag.StringP("serverKey", "k", "", "serverKey path. ")
-	userAgent         = flag.StringP("userAgent", "u", "", "User agent for HTTP requests\n")
-	maxDownloadTime   = flag.IntP("maxDownloadTime", "t", 10, "Max download time (s)\n")
-	maxConnectTime    = flag.IntP("maxConnectTime", "T", 5, "Max connect time (s)\n")
-	port              = flag.IntP("port", "p", 1965, "Server port")
-	address           = flag.StringP("address", "a", "127.0.0.1", "Bind to address\n")
-	unfiltered        = flag.BoolP("unfiltered", "", false, "Do not filter text/html to text/gemini")
-	verFlag           = flag.BoolP("version", "v", false, "Find out what version of Duckling Proxy you're running")
-)
+type TemplateRenderer = func(*gemini.Request, gemini.ResponseWriter, Page)
+
+type WebPipeHandler struct {
+	RenderTemplate TemplateRenderer
+}
 
 func fatal(format string, a ...interface{}) {
 	urlError(format, a...)
@@ -67,6 +56,13 @@ func check(e error) {
 		panic(e)
 		os.Exit(1)
 	}
+}
+
+type Page struct {
+	Title   string
+	Url     string
+	Gemtext string
+	Version string
 }
 
 func htmlToGmi(inputHtml string) (string, error) {
@@ -100,14 +96,11 @@ func htmlToGmi(inputHtml string) (string, error) {
 
 //func (h WebPipeHandler) Handle(r gemini.Request) *gemini.Response {
 func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
-	fmt.Printf("URL %v\n", r)
-
 	url := r.URL.String()
 	if r.URL.Scheme != "http" && r.URL.Scheme != "https" {
 		//any other schemes are not implemented by this proxy
 		w.WriteHeader(53, "Scheme not supported: "+r.URL.Scheme)
 		return
-		//return &gemini.Response{53, "Scheme not supported: " + r.URL.Scheme, nil, nil}
 	}
 
 	info("Retrieve: %s", r.URL.String())
@@ -132,12 +125,10 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 		Transport: netTransport,
 	}
 
-	//fmt.Println("making request")
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		w.WriteHeader(43, "Could not connect to remote HTTP host")
 		return
-		//return &gemini.Response{43, "Could not connect to remote HTTP host", nil, nil}
 	}
 
 	//set user agent if specified
@@ -149,7 +140,6 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 	if err != nil {
 		w.WriteHeader(43, "Remote host did not respond with valid HTTP")
 		return
-		//return &gemini.Response{43, "Remote host did not respond with valid HTTP", nil, nil}
 	}
 
 	defer response.Body.Close()
@@ -164,8 +154,6 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 		//wont know the baseline for link refs
 		w.WriteHeader(30, response.Request.URL.String())
 		return
-
-		//return &gemini.Response{30, response.Request.URL.String(), nil, nil}
 	}
 
 	contents, err := ioutil.ReadAll(response.Body)
@@ -174,7 +162,6 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 		info(abandonMsg)
 		w.WriteHeader(43, abandonMsg)
 		return
-		//return &gemini.Response{43, abandonMsg, nil, nil}
 	}
 
 	if response.StatusCode == 200 {
@@ -187,26 +174,25 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 
 			info("Converting to text/gemini: %s", r.URL.String())
 
-			//translate html to gmi
-			gmi, err := htmlToGmi(string(contents))
+			doc := ce.ParsePro(url, string(contents), "127.0.0.1", false)
+
+			var transformedHtml string = doc.Html
+			gmi, err := htmlToGmi(transformedHtml)
 
 			if err != nil {
 				w.WriteHeader(42, "HTML to GMI conversion failure")
 				return
-				//return &gemini.Response{42, "HTML to GMI conversion failure", nil, nil}
 			}
 
-			//add a footer to communicate that the content was filtered and not original
-			//also the link provides a clickable link that the user can activate to launch a browser, depending on their client
-			//behaviour (e.g. Ctrl-Click or similar)
-			footer := ""
-			footer += "\n\n──────────────────── 🦆 ──────────────────── 🦆 ──────────────────── \n\n"
-			footer += "Web page filtered and simplified by Duckling Proxy v" + version + ". To view the original content, open the page in your system web browser.\n"
-			footer += "=> " + r.URL.String() + " Source page \n"
-
-			body = ioutil.NopCloser(strings.NewReader(string(gmi) + footer))
-
 			contentType = "text/gemini"
+			w.WriteHeader(20, contentType)
+			h.RenderTemplate(r, w, Page{
+				Title:   doc.Title,
+				Url:     url,
+				Gemtext: gmi,
+				Version: version,
+			})
+			return
 
 		} else {
 			//let everything else through with the same content type
@@ -216,7 +202,6 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 		w.WriteHeader(20, contentType)
 		io.Copy(w, body)
 		return
-		//return &gemini.Response{20, contentType, body, nil}
 
 	} else if response.StatusCode == 404 {
 		w.WriteHeader(51, "Not found")
@@ -229,10 +214,33 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 	}
 }
 
-//go:embed index.gmi.tmpl
-var indextmpl string
+type Proxy struct {
+	Mux            *gemini.Mux
+	Handler        WebPipeHandler
+	RenderTemplate TemplateRenderer
+}
 
-func main() {
+func NewProxy() *Proxy {
+	tmpl := template.Must(template.ParseFS(templatecontent, "templates/*"))
+
+	return &Proxy{
+		Handler: WebPipeHandler{
+			RenderTemplate: CreateDefaultRenderTemplate(tmpl),
+		},
+	}
+}
+
+func (p *Proxy) SetRenderTemplate(renderTemplate func(*gemini.Request, gemini.ResponseWriter, Page)) {
+	p.Handler.RenderTemplate = renderTemplate
+}
+
+func CreateDefaultRenderTemplate(tmpl *template.Template) TemplateRenderer {
+	return func(r *gemini.Request, w gemini.ResponseWriter, p Page) {
+		tmpl.Execute(w, p)
+	}
+}
+
+func (p *Proxy) Start() {
 	flag.Parse()
 
 	if *verFlag {
@@ -240,65 +248,53 @@ func main() {
 		return
 	}
 
-	handler := WebPipeHandler{}
-
 	info("Starting Duckling Proxy v%s on %s port: %d", version, *address, *port)
 
 	certificates := &certificate.Store{}
 	var scope string = "*"
 	certificates.Register(scope)
 
-	pubkeybytes, err := ioutil.ReadFile(*serverCert)
-	if err != nil {
-		log.Fatal(err)
+	var pubkeybytes []byte
+	var privkeybytes []byte
+	if os.Getenv("CERT") != "" {
+		pubkeybytes = []byte(os.Getenv("CERT"))
+		privkeybytes = []byte(os.Getenv("KEY"))
+	} else {
+		c, err := ioutil.ReadFile(*serverCert)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pubkeybytes = c
+		k, err := ioutil.ReadFile(*serverKey)
+		if err != nil {
+			log.Fatal(err)
+		}
+		privkeybytes = k
 	}
-	privkeybytes, err := ioutil.ReadFile(*serverKey)
-	if err != nil {
-		log.Fatal(err)
-	}
+
 	cert, err := tls.X509KeyPair(pubkeybytes, privkeybytes)
 	if err != nil {
 		log.Fatal(err)
 	}
 	certificates.Add(scope, cert)
 
-	mux := &gemini.Mux{}
-	index, err := template.New("index").Parse(indextmpl)
-	if err != nil {
-		log.Fatal(err)
-	}
-	mux.HandleFunc("/", func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
-		w.WriteHeader(gemini.StatusSuccess, "text/gemini")
-		index.Execute(w, nil)
-	})
-
-	mux.HandleFunc("/view", func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
-		if r.URL.RawQuery == "" {
-			w.WriteHeader(gemini.StatusInput, "")
-		}
-		query := r.URL.Query()
-		for url := range query {
-			nr, err := gemini.NewRequest(url)
-			if err != nil {
-				w.WriteHeader(gemini.StatusTemporaryFailure, "")
-				w.Write([]byte(err.Error()))
-				return
-			}
-			handler.Handle(ctx, w, nr)
-			break
-		}
-	})
-
 	baseHandler := gemini.HandlerFunc(func(ctx context.Context, w gemini.ResponseWriter, r *gemini.Request) {
 		if r.URL.Scheme == "gemini" {
-			mux.ServeGemini(ctx, w, r)
-		} else {
-			handler.Handle(ctx, w, r)
+			if p.Mux != nil {
+				p.Mux.ServeGemini(ctx, w, r)
+				return
+			}
 		}
+		p.Handler.Handle(ctx, w, r)
 	})
 
+	addr := ":" + strconv.Itoa(*port)
+	if *address != "127.0.0.1" {
+		addr = *address + addr
+	}
+
 	server := &gemini.Server{
-		Addr:           *address + ":" + strconv.Itoa(*port),
+		Addr:           addr,
 		Handler:        gemini.LoggingMiddleware(baseHandler),
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   1 * time.Minute,
@@ -328,10 +324,4 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-
-	//err := gemini.ListenAndServe(*address+":"+strconv.Itoa(*port), *serverCert, *serverKey, handler)
-
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
 }
