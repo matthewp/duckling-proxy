@@ -2,29 +2,22 @@ package quack
 
 import (
 	"context"
-	"crypto/tls"
 	"embed"
-	"os/signal"
 	"text/template"
 
 	"crawler.club/ce"
 	"git.sr.ht/~adnano/go-gemini"
-	"git.sr.ht/~adnano/go-gemini/certificate"
 	"github.com/LukeEmmet/html2gemini"
-	flag "github.com/spf13/pflag"
 
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 )
-
-var version = "0.2.1"
 
 //go:embed templates/*
 var templatecontent embed.FS
@@ -215,7 +208,6 @@ func (h WebPipeHandler) Handle(ctx context.Context, w gemini.ResponseWriter, r *
 				Title:   doc.Title,
 				Url:     url,
 				Gemtext: gmi,
-				Version: version,
 			})
 			return
 
@@ -308,76 +300,5 @@ func Middleware(opts MiddlewareOptions) gemini.HandlerFunc {
 func CreateDefaultRenderTemplate(tmpl *template.Template) TemplateRenderer {
 	return func(r *gemini.Request, w gemini.ResponseWriter, p Page) {
 		tmpl.Execute(w, p)
-	}
-}
-
-func Start() {
-	info("Starting Duckling Proxy v%s on %s port: %d", version, "127.0.0.1", "1965")
-
-	certificates := &certificate.Store{}
-	var scope string = "*"
-	certificates.Register(scope)
-
-	var pubkeybytes []byte
-	var privkeybytes []byte
-	if os.Getenv("CERT") != "" {
-		pubkeybytes = []byte(os.Getenv("CERT"))
-		privkeybytes = []byte(os.Getenv("KEY"))
-	} else {
-		var (
-			serverCert = flag.StringP("serverCert", "c", "", "serverCert path. ")
-			serverKey  = flag.StringP("serverKey", "k", "", "serverKey path. ")
-		)
-
-		flag.Parse()
-
-		c, err := ioutil.ReadFile(*serverCert)
-		if err != nil {
-			log.Fatal(err)
-		}
-		pubkeybytes = c
-		k, err := ioutil.ReadFile(*serverKey)
-		if err != nil {
-			log.Fatal(err)
-		}
-		privkeybytes = k
-	}
-
-	cert, err := tls.X509KeyPair(pubkeybytes, privkeybytes)
-	if err != nil {
-		log.Fatal(err)
-	}
-	certificates.Add(scope, cert)
-
-	server := &gemini.Server{
-		Addr:           ":1965",
-		Handler:        gemini.LoggingMiddleware(NewProxy(nil).DefaultMiddleware()),
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   1 * time.Minute,
-		GetCertificate: certificates.Get,
-	}
-
-	// Listen for interrupt signal
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-
-	errch := make(chan error)
-	go func() {
-		ctx := context.Background()
-		errch <- server.ListenAndServe(ctx)
-	}()
-
-	select {
-	case err := <-errch:
-		log.Fatal(err)
-	case <-c:
-		// Shutdown the server
-		log.Println("Shutting down...")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		err := server.Shutdown(ctx)
-		if err != nil {
-			log.Fatal(err)
-		}
 	}
 }

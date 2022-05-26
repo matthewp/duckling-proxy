@@ -6,7 +6,6 @@ require (
 	crawler.club/ce v0.0.0-20210610150917-b66592ddb184
 	git.sr.ht/~adnano/go-gemini v0.2.3
 	github.com/LukeEmmet/html2gemini v0.0.0-20200831220433-65476d2a84ff
-	github.com/spf13/pflag v1.0.5
 )
 
 require (

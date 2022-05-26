@@ -9,47 +9,6 @@ Quack proxy is cross platform and written in Go.
 
 ## Usage
 
-### Full server
-
-```go
-import (
-  quack "github.com/matthewp/quack-proxy"
-)
-```
-
-You can use Quack a couple of ways. To start a server straight away using CLI flags, like with Duckling, just call Start():
-
-```go
-func main() {
-  quack.Start()
-}
-```
-
-The following flags are inherited from Duckling:
-
-```
-Usage:
-  -a, --address string          Bind to address
-                                 (default "127.0.0.1")
-  -m, --citationMarkers         Use footnote style citation markers
-  -s, --citationStart int       Start citations from this index (default 1)
-  -e, --emitImagesAsLinks       Emit links to included images
-  -l, --linkEmitFrequency int   Emit gathered links through the document after this number of paragraphs (default 2)
-  -T, --maxConnectTime int      Max connect time (s)
-                                 (default 5)
-  -t, --maxDownloadTime int     Max download time (s)
-                                 (default 10)
-  -n, --numberedLinks           Number the links
-  -p, --port int                Server port (default 1965)
-  -r, --prettyTables            Pretty tables - works with most simple tables
-  -c, --serverCert string       serverCert path.
-  -k, --serverKey string        serverKey path.
-      --unfiltered              Do not filter text/html to text/gemini
-  -u, --userAgent string        User agent for HTTP requests
-  -v, --version                 Find out what version of Duckling Proxy you're running
-  
-```
-
 You will need to configure your Gemini client to point to the server when there is a need to access any <code>http://</code> or <code>https://</code> requests.
 
 ### As middleware
@@ -91,5 +50,3 @@ The following clients support per-scheme proxies and can be configured to use Du
 * [GemiNaut](https://github.com/LukeEmmet/GemiNaut) - since 0.8.8, which also has its own native html to gemini conversion - update in settings
 * [Lagrange](https://git.skyjake.fi/skyjake/lagrange) - set proxy in preferences (use 127.0.0.1:port, not localhost:port for localhost)
 * [Telescope](https://telescope.omarpolo.com/) - set proxy in the config file add: ```proxy "https" via "gemini://127.0.0.1:1965"```, and similarly for http
-
-Let me know if your client supports per scheme proxies and I'll add it to the list.
